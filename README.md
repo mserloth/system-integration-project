@@ -29,7 +29,6 @@
 
 **SchwarzkapplerRadar** ist ein cloudbasiertes Echtzeit-Monitoring-System, das automatisch Fahrkartenkontroll-Meldungen aus der öffentlichen Telegram-Gruppe [schwarzkappler.info Wien](https://t.me/schwarzkappler) erfasst, mittels Azure AI strukturiert verarbeitet und auf einem interaktiven Web-Dashboard visualisiert.
 
-Das System wurde im Rahmen des Kurses **Systems Integration (SS 2025)** an der [FH Technikum Wien (FHTW)](https://www.technikum-wien.at/) entwickelt.
 
 **Kern-Workflow:**
 1. Nutzer melden Fahrkartenkontroller in der Telegram-Gruppe
@@ -90,12 +89,6 @@ Das System wurde im Rahmen des Kurses **Systems Integration (SS 2025)** an der [
 
 Für den Betrieb des Systems wurde in **Microsoft Azure** eine dedizierte Ressourcengruppe provisioniert, die alle benötigten Cloud-Dienste bündelt.
 
-### Ressourcengruppe
-
-| Eigenschaft | Wert |
-|-------------|------|
-| **Name** | `rg-system-integration-AI-modl` |
-| **Region** | Switzerland North (`switzerlandnorth`) |
 
 ### Provisionierte Dienste
 
