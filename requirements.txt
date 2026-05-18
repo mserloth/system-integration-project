@@ -1,0 +1,8 @@
+telethon
+python-dotenv
+openai
+azure-data-tables
+streamlit
+folium
+streamlit-folium
+rapidfuzz
