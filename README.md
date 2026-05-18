@@ -11,6 +11,7 @@
 - [Features](#features)
 - [Technologie-Stack](#technologie-stack)
 - [Voraussetzungen](#voraussetzungen)
+- [Azure-Infrastruktur](#azure-infrastruktur)
 - [Installation](#installation)
 - [Konfiguration](#konfiguration)
 - [Starten der Anwendung](#starten-der-anwendung)
@@ -20,6 +21,7 @@
 - [Dashboard-Übersicht](#dashboard-übersicht)
 - [Konfigurationsparameter](#konfigurationsparameter)
 - [Alternativer Betrieb mit lokalem LLM](#alternativer-betrieb-mit-lokalem-llm)
+- [Entwicklung & Tests](#entwicklung--tests)
 
 ---
 
@@ -81,6 +83,39 @@ Das System wurde im Rahmen des Kurses **Systems Integration (SS 2025)** an der [
   - Azure AI Foundry Deployment (gpt-5-mini oder kompatibel)
   - Azure Storage Account mit Table Storage
 - `pip` oder `pip3` für die Paketinstallation
+
+---
+
+## Azure-Infrastruktur
+
+Für den Betrieb des Systems wurde in **Microsoft Azure** eine dedizierte Ressourcengruppe provisioniert, die alle benötigten Cloud-Dienste bündelt.
+
+### Ressourcengruppe
+
+| Eigenschaft | Wert |
+|-------------|------|
+| **Name** | `rg-system-integration-AI-modl` |
+| **Region** | Switzerland North (`switzerlandnorth`) |
+
+### Provisionierte Dienste
+
+| Dienst | Typ | Zweck |
+|--------|-----|-------|
+| Azure AI Foundry | LLM Deployment (`gpt-5-mini`) | Extraktion strukturierter Daten aus Freitext |
+| Azure Storage Account | StorageV2 — Table Storage (`kontrollen`) | Persistenz aller Fahrkartenkontroll-Ereignisse |
+
+**Azure AI Foundry (LLM)**
+- Deployment-Modell: `gpt-5-mini`
+- Verwendet via OpenAI-kompatiblem SDK
+- Endpoint und API-Key werden über `.env` konfiguriert
+
+**Azure Storage Account**
+- Account-Name: `fareradarstorage`
+- Typ: StorageV2
+- Tabelle: `kontrollen`
+- Connection String wird über `.env` konfiguriert
+
+> Beide Ressourcen liegen in der Ressourcengruppe `rg-system-integration-AI-modl` (Switzerland North) und wurden gemeinsam für dieses Projekt bereitgestellt.
 
 ---
 
@@ -259,41 +294,21 @@ Ereignis erstellt (beendet_am = "")
 
 ## Datenfluss
 
-```
-1. Telegram-Nachricht eingeht (z. B. "Kontrolle U3 Erdberg, gerade gesehen")
-         │
-         ▼
-2. Telethon empfängt Nachricht via MTProto (main-azure.py)
-         │
-         ▼
-3. Azure AI Foundry (gpt-5-mini) verarbeitet Freitext → JSON:
-   {
-     "wichtig": true,
-     "kategorie": "Kontrolle",
-     "ereignis_typ": "Einzelmeldung",
-     "linie": "U3",
-     "ort": "Erdberg",
-     "zusammenfassung": "Fahrkartenkontrolle bei U3 Erdberg",
-     "konfidenz": 0.92
-   }
-         │
-         ▼
-4. Python-Backend validiert & fügt Timestamps hinzu
-         │
-         ▼
-5. Azure Table Storage speichert Ereignis in Tabelle "kontrollen"
-         │
-         ▼
-6. Streamlit (app.py) liest alle 30 Sekunden neue Daten
-         │
-         ▼
-7. RapidFuzz matched "Erdberg" → Koordinaten aus WL-CSV
-         │
-         ▼
-8. Folium-Marker auf Karte gesetzt, Tabellen aktualisiert
-         │
-         ▼
-9. Background-Task prüft alle 60 Sek. → schließt ältere Ereignisse automatisch
+```mermaid
+flowchart TD
+    A["1. Telegram-Nachricht\n'Kontrolle U3 Erdberg, gerade gesehen'"]
+    B["2. Telethon MTProto Listener\nmain-azure.py"]
+    C["3. Azure AI Foundry · gpt-5-mini\nFreitext → JSON-Extraktion"]
+    D["4. Python-Backend\nValidierung & Timestamps"]
+    E["5. Azure Table Storage\nTabelle 'kontrollen'"]
+    F["6. Streamlit Dashboard\nliest alle 30 Sekunden"]
+    G["7. RapidFuzz\nStationsname → Koordinaten"]
+    H["8. Folium-Karte\nMarker & Tabellen aktualisiert"]
+    I["9. Background-Task\nAuto-Close alle 60 Sek."]
+
+    A --> B --> C --> D --> E
+    E --> F --> G --> H
+    E --> I
 ```
 
 ---
