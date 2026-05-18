@@ -108,8 +108,6 @@ Für den Betrieb des Systems wurde in **Microsoft Azure** eine dedizierte Ressou
 - Tabelle: `kontrollen`
 - Connection String wird über `.env` konfiguriert
 
-> Beide Ressourcen liegen in der Ressourcengruppe `rg-system-integration-AI-modl` (Switzerland North) und wurden gemeinsam für dieses Projekt bereitgestellt.
-
 ---
 
 ## Installation
