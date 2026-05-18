@@ -20,9 +20,6 @@
 - [Dashboard-Übersicht](#dashboard-übersicht)
 - [Konfigurationsparameter](#konfigurationsparameter)
 - [Alternativer Betrieb mit lokalem LLM](#alternativer-betrieb-mit-lokalem-llm)
-- [Entwicklung & Tests](#entwicklung--tests)
-- [Team](#team)
-- [Lizenz](#lizenz)
 
 ---
 
@@ -43,34 +40,7 @@ Das System wurde im Rahmen des Kurses **Systems Integration (SS 2025)** an der [
 
 ## Systemarchitektur
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    SchwarzkapplerRadar System                    │
-│                                                                  │
-│  Telegram Gruppe                                                  │
-│  (schwarzkappler.info Wien)                                      │
-│         │                                                        │
-│         ▼                                                        │
-│  ┌─────────────┐    JSON-Extraktion    ┌──────────────────────┐ │
-│  │ Telethon    │ ──────────────────── ▶│ Azure AI Foundry     │ │
-│  │ MTProto     │ ◀────────────────────  (gpt-5-mini)         │ │
-│  │ Listener    │    Strukturierte Daten └──────────────────────┘ │
-│  └──────┬──────┘                                                 │
-│         │ Schreiben                                              │
-│         ▼                                                        │
-│  ┌─────────────────────┐      Lesen (alle 30 Sek.)              │
-│  │ Azure Table Storage  │ ◀─────────────────────────────────┐   │
-│  │ (kontrollen)         │                                   │   │
-│  └─────────────────────┘                                   │   │
-│         ▲                                          ┌────────┴──┐ │
-│         │ Auto-Close                               │ Streamlit │ │
-│         │ (alle 60 Sek.)                           │ Dashboard │ │
-│  ┌──────┴──────┐                                   │ :8501     │ │
-│  │ Background  │                                   └───────────┘ │
-│  │ Task        │                                                  │
-│  └─────────────┘                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+<img width="938" height="827" alt="image" src="https://github.com/user-attachments/assets/bf3bf046-283b-4f70-a40c-bacbc2e896a2" />
 
 ---
 
@@ -177,7 +147,7 @@ Die `TARGET_GROUP`-ID einer Telegram-Gruppe ermittelt man einmalig mit dem Hilfs
 python InitialSetupForGroupID.py
 ```
 
-Das Skript gibt alle Chats mit ihren IDs aus. Die gesuchte Gruppe (z. B. `schwarzkappler.info Wien`) hat eine negative ID (z. B. `-1001234567890`).
+Das Skript gibt alle Chats mit ihren IDs aus. Die gesuchte Gruppe (z. B. `schwarzkappler Test`) hat eine negative ID (z. B. `-1001234567890`).
 
 ---
 
@@ -416,29 +386,6 @@ Wichtige Pakete:
 | `rapidfuzz` | ≥3.0 | Fuzzy-String-Matching |
 | `pandas` | ≥2.0 | CSV-Datenverarbeitung |
 | `python-dotenv` | ≥1.0 | .env-Datei-Unterstützung |
-
----
-
-## Team
-
-Dieses Projekt wurde zu gleichen Teilen von 5 Studierenden der FH Technikum Wien entwickelt:
-
-| Name | GitHub |
-|------|--------|
-| Markus Serloth | [@mserloth](https://github.com/mserloth) |
-| *(Teamkollege 2)* | — |
-| *(Teamkollege 3)* | — |
-| *(Teamkollege 4)* | — |
-| *(Teamkollege 5)* | — |
-
-**Kurs:** Systems Integration, Sommersemester 2025
-**Institution:** [FH Technikum Wien (FHTW)](https://www.technikum-wien.at/)
-
----
-
-## Lizenz
-
-Dieses Projekt wurde als Lehrveranstaltungsprojekt entwickelt. Eine explizite Open-Source-Lizenz wurde nicht vergeben. Verwendung auf eigene Verantwortung.
 
 ---
 
