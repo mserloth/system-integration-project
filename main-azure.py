@@ -1,11 +1,12 @@
 import os
 import json
 import asyncio
-from datetime import datetime, timezone, timedelta  # NEW
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv, find_dotenv
 from telethon import TelegramClient, events
 from openai import OpenAI
 from azure.data.tables import TableServiceClient, UpdateMode
+from rapidfuzz import process, fuzz
 
 load_dotenv(find_dotenv())
 
@@ -18,9 +19,8 @@ AZURE_ENDPOINT = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
 AZURE_DEPLOYMENT = os.getenv('AZURE_AI_FOUNDRY_DEPLOYMENT', 'gpt-5-mini')
 AZURE_STORAGE_CONNECTION_STRING = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
 
-# NEW — change AUTO_CLOSE_MINUTES for the live demo (e.g. 1, 3, 5 — default: 90)
-AUTO_CLOSE_MINUTES = 5
-# NEW — how often the cleanup check runs (in seconds)
+#If the variable isn't in .env at all, it stays at X minutes.
+AUTO_CLOSE_MINUTES = int(os.getenv("AUTO_CLOSE_MINUTES", 5))
 CHECK_INTERVAL_SECONDS = 60
 
 ai_client = OpenAI(
@@ -49,9 +49,7 @@ def analyse_mit_ki(text: str, timestamp: str) -> dict:
                     "Du bist ein Assistent, der Telegram-Nachrichten analysiert. "
                     "Antworte NUR mit einem reinen JSON-Objekt, ohne Markdown, ohne Codeblock, ohne Erklärung. "
                     "Felder: "
-                    "\"wichtig\" (true/false), "
-                    "\"kategorie\" (Kontrolle/Unfall/Stau/Sonstiges), "
-                    "\"ereignis_typ\" (Beginn/Ende/Einzelmeldung — ist das der Start einer Kontrolle, das Ende, oder eine einmalige Meldung?), "
+                    "\"ereignis_typ\" (Beginn/Ende — ist das der Start einer Kontrolle oder das Ende?), "
                     "\"linie\" (Liniennummer als String oder null), "
                     "\"ort\" (Haltestellenname oder null), "
                     "\"zusammenfassung\" (ein kurzer Satz), "
@@ -86,19 +84,46 @@ def _row_key(timestamp: str) -> str:
 
 
 def speichere_ereignis(analyse: dict):
-    kategorie = analyse.get("kategorie", "Sonstiges")
+    konfidenz = float(analyse.get("konfidenz", 0.0))
+    if konfidenz < 0.2:
+        print(f"  → Zu niedrige Konfidenz ({konfidenz:.2f}), Ereignis wird nicht gespeichert.")
+        return
+
+    kategorie = "Kontrolle"
     linie = str(analyse.get("linie") or "")
     ort = str(analyse.get("ort") or "")
-    ereignis_typ = analyse.get("ereignis_typ", "Einzelmeldung")
+    ereignis_typ = analyse.get("ereignis_typ", "Beginn")
+
+    if ereignis_typ == "Beginn" and (linie or ort):
+        if linie and ort:
+            dup_filter = f"PartitionKey eq '{kategorie}' and linie eq '{linie}' and ort eq '{ort}' and beendet_am eq ''"
+        elif ort:
+            dup_filter = f"PartitionKey eq '{kategorie}' and ort eq '{ort}' and beendet_am eq ''"
+        else:
+            dup_filter = f"PartitionKey eq '{kategorie}' and linie eq '{linie}' and beendet_am eq ''"
+        existing = list(table_client.query_entities(dup_filter))
+        if existing:
+            print(f"  → Duplikat erkannt, bereits offen seit {existing[0].get('gestartet_am')} — wird ignoriert.")
+            return
 
     if ereignis_typ == "Ende":
-        filter_str = (
-            f"PartitionKey eq '{kategorie}' "
-            f"and linie eq '{linie}' "
-            f"and ort eq '{ort}' "
-            f"and beendet_am eq ''"
-        )
-        entities = list(table_client.query_entities(filter_str))
+        # Pass 1: exact match on line + station
+        entities = []
+        if linie and ort:
+            entities = list(table_client.query_entities(
+                f"PartitionKey eq '{kategorie}' and linie eq '{linie}' and ort eq '{ort}' and beendet_am eq ''"
+            ))
+        # Pass 2: fuzzy station match across all open events
+        if not entities and ort:
+            open_events = list(table_client.query_entities(
+                f"PartitionKey eq '{kategorie}' and beendet_am eq ''"
+            ))
+            if open_events:
+                ort_list = [e.get("ort", "") for e in open_events]
+                result = process.extractOne(ort, ort_list, scorer=fuzz.WRatio)
+                if result is not None and result[1] >= 70:
+                    print(f"  → Fuzzy-Match: '{ort}' → '{result[0]}' (Score: {result[1]})")
+                    entities = [open_events[result[2]]]
         if entities:
             entity = sorted(entities, key=lambda x: x.get("gestartet_am", ""))[-1]
             entity["beendet_am"] = analyse["gestartet_am"]
@@ -106,17 +131,19 @@ def speichere_ereignis(analyse: dict):
             print(f"  → Offenes Ereignis geschlossen (gestartet: {entity.get('gestartet_am')})")
             return
 
+    # An unmatched "Ende" goes directly to closed so it never appears as active
+    beendet_am = analyse["gestartet_am"] if ereignis_typ == "Ende" else ""
+
     entity = {
         "PartitionKey": kategorie,
         "RowKey": _row_key(analyse["gestartet_am"]),
-        "wichtig": bool(analyse.get("wichtig", False)),
         "ereignis_typ": ereignis_typ,
         "linie": linie,
         "ort": ort,
         "zusammenfassung": str(analyse.get("zusammenfassung", "")),
         "konfidenz": float(analyse.get("konfidenz", 0.0)),
         "gestartet_am": analyse["gestartet_am"],
-        "beendet_am": "",
+        "beendet_am": beendet_am,
     }
     table_client.create_entity(entity)
     print(f"  → Ereignis gespeichert (Typ: {ereignis_typ})")

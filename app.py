@@ -1,7 +1,9 @@
 import os
+import urllib.request
 import pandas as pd
 import folium
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 from streamlit_folium import st_folium
 from azure.data.tables import TableServiceClient
 from dotenv import load_dotenv, find_dotenv
@@ -20,6 +22,50 @@ KATEGORIE_COLOR = {
     "Stau": "blue",
     "Sonstiges": "gray",
 }
+
+# U-Bahn line drawing — LINFO is the internal line number in the Wien WFS
+LINFO_TO_LINE = {1: "U1", 2: "U2", 3: "U3", 4: "U4", 6: "U6"}
+UBAHN_LINE_COLOR = {
+    "U1": "#E2001A",
+    "U2": "#9B59B6",
+    "U3": "#EF7C00",
+    "U4": "#23A127",
+    "U6": "#964B00",
+}
+_WFS_URL = (
+    "https://data.wien.gv.at/daten/geo?service=WFS&request=GetFeature"
+    "&version=1.1.0&typeName=ogdwien:UBAHNOGD&srsName=EPSG:4326&outputFormat=json"
+)
+
+
+@st.cache_data(ttl=3600)
+def load_ubahn_geojson() -> dict | None:
+    try:
+        import json
+        with urllib.request.urlopen(_WFS_URL, timeout=10) as r:
+            return json.loads(r.read().decode())
+    except Exception:
+        return None
+
+
+def draw_ubahn_lines(m: folium.Map, active_lines: set, geojson: dict | None):
+    if not geojson:
+        return
+    for feature in geojson.get("features", []):
+        linfo = (feature.get("properties") or {}).get("LINFO")
+        line_name = LINFO_TO_LINE.get(linfo)
+        if line_name not in active_lines:
+            continue
+        coords = (feature.get("geometry") or {}).get("coordinates", [])
+        if not coords:
+            continue
+        folium.PolyLine(
+            locations=[[c[1], c[0]] for c in coords],
+            color=UBAHN_LINE_COLOR.get(line_name, "#888888"),
+            weight=5,
+            opacity=0.7,
+            tooltip=line_name,
+        ).add_to(m)
 
 
 @st.cache_data(ttl=30)
@@ -50,8 +96,10 @@ def fuzzy_coords(ort: str, stations: pd.DataFrame):
     return float(row["Latitude"]), float(row["Longitude"])
 
 
-def build_map(active: pd.DataFrame, stations: pd.DataFrame) -> folium.Map:
+def build_map(active: pd.DataFrame, stations: pd.DataFrame, geojson: dict | None) -> folium.Map:
     m = folium.Map(location=[48.21, 16.37], zoom_start=12, tiles="CartoDB positron")
+    active_lines = {str(row.get("linie") or "") for _, row in active.iterrows()}
+    draw_ubahn_lines(m, active_lines, geojson)
     for _, row in active.iterrows():
         ort = str(row.get("ort") or "")
         lat, lon = fuzzy_coords(ort, stations)
@@ -73,10 +121,13 @@ def build_map(active: pd.DataFrame, stations: pd.DataFrame) -> folium.Map:
 
 # ── Layout ──────────────────────────────────────────────────────────────────
 
+st_autorefresh(interval=30_000, key="autorefresh")
+
 st.title("FareRadar — Kontrollübersicht Wien")
 
 stations = load_stations()
 events = load_events()
+ubahn_geojson = load_ubahn_geojson()
 
 if events.empty:
     st.info("Noch keine Ereignisse in der Datenbank.")
@@ -116,7 +167,7 @@ st.divider()
 # ── Map ───────────────────────────────────────────────────────────────────────
 
 st.subheader(f"Karte — Aktive Ereignisse ({len(active)})")
-m = build_map(active, stations)
+m = build_map(active, stations, ubahn_geojson)
 st_folium(m, width="100%", height=520, returned_objects=[])
 
 st.divider()
@@ -127,9 +178,9 @@ st.subheader("Aktive Kontrollen")
 if active.empty:
     st.success("Keine aktiven Ereignisse — alles ruhig.")
 else:
-    display_cols = [c for c in ["PartitionKey", "linie", "ort", "zusammenfassung", "konfidenz", "gestartet_am"] if c in active.columns]
+    display_cols = [c for c in ["ereignis_typ", "PartitionKey", "linie", "ort", "zusammenfassung", "konfidenz", "gestartet_am"] if c in active.columns]
     st.dataframe(
-        active[display_cols].rename(columns={"PartitionKey": "Kategorie"}),
+        active[display_cols].rename(columns={"PartitionKey": "Kategorie", "ereignis_typ": "Ereignistyp"}),
         use_container_width=True,
         hide_index=True,
     )
@@ -142,9 +193,9 @@ st.subheader("Abgeschlossene Ereignisse")
 if closed.empty:
     st.info("Noch keine abgeschlossenen Ereignisse.")
 else:
-    display_cols = [c for c in ["PartitionKey", "linie", "ort", "zusammenfassung", "gestartet_am", "beendet_am"] if c in closed.columns]
+    display_cols = [c for c in ["ereignis_typ", "PartitionKey", "linie", "ort", "zusammenfassung", "gestartet_am", "beendet_am"] if c in closed.columns]
     st.dataframe(
-        closed[display_cols].rename(columns={"PartitionKey": "Kategorie"}),
+        closed[display_cols].rename(columns={"PartitionKey": "Kategorie", "ereignis_typ": "Ereignistyp"}),
         use_container_width=True,
         hide_index=True,
     )
