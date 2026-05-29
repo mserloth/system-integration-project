@@ -35,11 +35,44 @@ table_client = table_service.get_table_client("kontrollen")
 
 
 def init_storage():
+    """Initialisiert die Azure Table Storage Tabelle beim Programmstart.
+
+    Stellt sicher, dass die Tabelle 'kontrollen' in Azure Table Storage existiert.
+    Wird beim Start von main() aufgerufen. Ist die Tabelle bereits vorhanden,
+    hat der Aufruf keinen Effekt (idempotent).
+    """
     table_service.create_table_if_not_exists("kontrollen")
     print("  Azure Table Storage verbunden (Tabelle: kontrollen)")
 
 
 def analyse_mit_ki(text: str, timestamp: str) -> dict:
+    """Analysiert einen Telegram-Nachrichtentext mit Azure AI Foundry (GPT) und gibt ein strukturiertes Ereignis zurück.
+
+    Sendet den Nachrichtentext an das konfigurierte Azure-Sprachmodell mit einem
+    festen System-Prompt, der das Modell zu einer reinen JSON-Antwort zwingt.
+    Bereinigt optional vorhandene Markdown-Codeblöcke aus der Antwort und ergänzt
+    das Ergebnis um Zeitstempel-Felder. Läuft synchron und wird via
+    asyncio.to_thread() aus dem async Kontext aufgerufen.
+
+    Args:
+        text (str): Rohtext der Telegram-Nachricht, der analysiert werden soll.
+        timestamp (str): ISO-Zeitstempel der Nachricht, wird dem Ergebnis als
+                         'gestartet_am' hinzugefügt.
+
+    Returns:
+        dict: Strukturiertes Ereignis-Objekt mit den Feldern:
+              - ereignis_typ (str): "Beginn" oder "Ende"
+              - linie (str | None): Liniennummer, z.B. "U3"
+              - ort (str | None): Haltestellenname
+              - zusammenfassung (str): Kurze Beschreibung des Ereignisses
+              - konfidenz (float): Modell-Konfidenz zwischen 0.0 und 1.0
+              - gestartet_am (str): Zeitstempel der Nachricht
+              - beendet_am (str): Leerstring (wird ggf. später gesetzt)
+
+    Raises:
+        ValueError: Wenn das Modell eine leere Antwort zurückgibt.
+        json.JSONDecodeError: Wenn die Modell-Antwort kein gültiges JSON enthält.
+    """
     response = ai_client.chat.completions.create(
         model=AZURE_DEPLOYMENT,
         messages=[
@@ -76,6 +109,18 @@ def analyse_mit_ki(text: str, timestamp: str) -> dict:
 
 
 def _row_key(timestamp: str) -> str:
+    """Wandelt einen ISO-Zeitstempel in einen gültigen Azure Table Storage RowKey um.
+
+    Azure Table Storage erlaubt in RowKeys keine Sonderzeichen wie ':', '+', ' '
+    oder '/'. Diese Funktion ersetzt alle unzulässigen Zeichen durch sichere
+    Alternativen, sodass der Zeitstempel als eindeutiger RowKey verwendet werden kann.
+
+    Args:
+        timestamp (str): ISO-Zeitstempel, z.B. "2024-05-20 14:32:00+00:00".
+
+    Returns:
+        str: Bereinigter RowKey, z.B. "2024-05-20_14-32-00p00-00".
+    """
     return (timestamp
             .replace(":", "-")
             .replace("+", "p")
@@ -84,6 +129,23 @@ def _row_key(timestamp: str) -> str:
 
 
 def speichere_ereignis(analyse: dict):
+    """Speichert oder aktualisiert ein KI-analysiertes Ereignis in Azure Table Storage.
+
+    Implementiert die vollständige Speicher-Logik mit drei Fällen:
+    1. Konfidenz < 0.2 → Ereignis wird verworfen (zu unsicher).
+    2. ereignis_typ == "Beginn" → Duplikat-Check (gleiche Linie + Ort noch offen?).
+       Ist kein Duplikat vorhanden, wird ein neuer Eintrag erstellt.
+    3. ereignis_typ == "Ende" → Versucht ein passendes offenes Ereignis zu schließen:
+       - Pass 1: Exakter Match auf Linie + Ort.
+       - Pass 2: Fuzzy-Match auf Ort über alle offenen Ereignisse (≥ 70 % WRatio).
+       Wird kein Match gefunden, wird das "Ende" direkt als geschlossen gespeichert,
+       damit es nie als aktiv erscheint.
+
+    Args:
+        analyse (dict): Ergebnis-Dict aus analyse_mit_ki() mit den Feldern
+                        ereignis_typ, linie, ort, zusammenfassung, konfidenz,
+                        gestartet_am, beendet_am.
+    """
     konfidenz = float(analyse.get("konfidenz", 0.0))
     if konfidenz < 0.2:
         print(f"  → Zu niedrige Konfidenz ({konfidenz:.2f}), Ereignis wird nicht gespeichert.")
@@ -149,8 +211,22 @@ def speichere_ereignis(analyse: dict):
     print(f"  → Ereignis gespeichert (Typ: {ereignis_typ})")
 
 
-# NEW — background loop that auto-closes events older than AUTO_CLOSE_MINUTES
 async def auto_close_stale_events():
+    """Hintergrund-Task, der veraltete offene Ereignisse automatisch schließt.
+
+    Läuft als endlose asyncio-Schleife und prüft alle CHECK_INTERVAL_SECONDS (60 s),
+    ob noch offene Ereignisse (beendet_am == '') existieren, deren Startzeit älter
+    als AUTO_CLOSE_MINUTES ist. Solche Ereignisse werden mit dem aktuellen UTC-Zeitstempel
+    als beendet_am markiert und per MERGE-Update in Azure Table Storage aktualisiert.
+
+    Die Funktion verhindert, dass Ereignisse dauerhaft als aktiv erscheinen, wenn
+    kein explizites "Ende"-Signal in Telegram gesendet wurde.
+
+    Note:
+        AUTO_CLOSE_MINUTES und CHECK_INTERVAL_SECONDS werden aus den Umgebungs-
+        variablen geladen (Standard: 5 Min. / 60 s). Fehler im Loop werden
+        abgefangen und geloggt, ohne den Task zu beenden.
+    """
     while True:
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
         try:
@@ -180,6 +256,18 @@ async def auto_close_stale_events():
 
 @telegram_client.on(events.NewMessage(chats=TARGET_GROUP))
 async def new_message_handler(event):
+    """Telethon-Event-Handler für neue Nachrichten in der überwachten Telegram-Gruppe.
+
+    Wird von Telethon automatisch aufgerufen, sobald eine neue Nachricht in
+    TARGET_GROUP eintrifft. Extrahiert Text, Zeitstempel und Absender, übergibt
+    den Text an analyse_mit_ki() (via asyncio.to_thread, da synchron) und
+    speichert das Ergebnis via speichere_ereignis(). Leere Nachrichten (z.B.
+    reine Medien-Posts) werden stillschweigend ignoriert.
+
+    Args:
+        event: Telethon NewMessage-Event mit den Attributen message.message
+               (Text), message.date (Zeitstempel) und get_sender() (Absender).
+    """
     text = event.message.message
     timestamp = event.message.date
     sender = await event.get_sender()
@@ -202,6 +290,16 @@ async def new_message_handler(event):
 
 
 async def main():
+    """Einstiegspunkt der Anwendung — initialisiert alle Dienste und startet die Event-Loop.
+
+    Führt beim Start folgende Schritte aus:
+    1. Gibt Konfigurationsinfo (Modell, Endpoint) aus.
+    2. Initialisiert Azure Table Storage via init_storage().
+    3. Startet den Telegram-Client und verbindet sich mit der API.
+    4. Startet auto_close_stale_events() als Hintergrund-Task.
+    5. Blockiert in telegram_client.run_until_disconnected() bis das Programm
+       manuell beendet oder die Verbindung getrennt wird.
+    """
     print("\nStarte SchwarzkapplerRadar (Azure AI Foundry Modus)...")
     print(f"  Modell: {AZURE_DEPLOYMENT}")
     print(f"  Endpoint: {AZURE_ENDPOINT}")
